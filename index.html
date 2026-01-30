@@ -4,6 +4,354 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Meat Dept Spot Scanner (Photo)</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
+    #wrap { max-width: 980px; margin: 0 auto; }
+    .sub { opacity:.85; margin-top: 6px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 10px 0; }
+    button, select, input { font-size: 18px; padding: 10px 12px; border-radius: 12px; }
+    button { border:0; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .panel { background:#f4f4f4; border-radius:14px; padding:14px; margin-top:12px; }
+    .assign { background:#fff; border-radius:14px; padding:14px; border:1px solid #ddd; margin-top:12px; display:none; }
+    .big { font-size: 38px; font-weight: 900; }
+    .status { margin-top:10px; padding:10px; border-radius:12px; background:#111; color:#eee;
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; white-space: pre-wrap; }
+    #preview { width:100%; max-height: 40vh; object-fit: contain; border-radius: 14px; background:#000; display:none; }
+    .spotbtn { font-weight:900; padding: 12px 14px; border-radius: 12px; }
+    textarea { width:100%; min-height: 170px; font-size: 14px; padding: 10px; border-radius: 12px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <h2>Meat Dept Spot Scanner (Take Photo)</h2>
+  <div class="sub">Tap <b>Take Barcode Photo</b> → it reads the UPC → shows Spot, or lets you assign Spot + A/B.</div>
+
+  <div class="row">
+    <button id="takeBtn">Take Barcode Photo</button>
+    <button id="clearPreviewBtn">Clear Preview</button>
+    <input id="fileInput" type="file" accept="image/*" capture="environment" style="display:none;">
+  </div>
+
+  <img id="preview" alt="preview"/>
+
+  <div class="panel">
+    <div class="big" id="spotText">Ready</div>
+    <div class="sub" id="descText">Take a photo of the barcode</div>
+    <div class="sub" id="upcText"></div>
+  </div>
+
+  <div class="status" id="statusText">Status: idle</div>
+
+  <div class="panel">
+    <b>Manual lookup (backup)</b>
+    <div class="row">
+      <input id="manualUpc" inputmode="numeric" placeholder="Type UPC digits"/>
+      <button id="manualBtn">Lookup</button>
+    </div>
+    <div class="sub">If the barcode photo doesn’t decode, type the UPC once and save it.</div>
+  </div>
+
+  <div class="assign" id="assignPanel">
+    <div style="font-weight:900; font-size:18px;">Assign location for scanned item</div>
+    <div class="sub" id="assignUpcLine"></div>
+
+    <div class="row">
+      <label><b>Spot</b></label>
+      <select id="spotSel">
+        <option value="1">Spot 1</option>
+        <option value="2">Spot 2</option>
+        <option value="3">Spot 3</option>
+        <option value="4">Spot 4</option>
+      </select>
+
+      <label><b>Zone</b></label>
+      <select id="zoneSel">
+        <option value="A">A (Front)</option>
+        <option value="B">B (Back)</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <input id="descInput" placeholder="Description (optional)" style="flex:1; min-width:240px;">
+      <button id="saveAssignBtn">Save</button>
+      <button id="cancelAssignBtn">Cancel</button>
+    </div>
+
+    <div class="sub">Quick set:</div>
+    <div class="row" id="quickBtns"></div>
+  </div>
+
+  <details style="margin-top:14px;">
+    <summary><b>Export / Import saved list</b></summary>
+    <div class="row">
+      <button id="exportBtn">Export</button>
+      <input type="file" id="importFile" accept=".txt,.csv"/>
+      <button id="clearAllBtn">Clear All Saved</button>
+    </div>
+    <div class="sub">Format: UPC,SPOT,ZONE,DESCRIPTION</div>
+    <textarea id="dbView" readonly></textarea>
+  </details>
+
+  <canvas id="canvas" style="display:none;"></canvas>
+</div>
+
+<script type="module">
+  // ✅ BrowserMultiFormatReader (ZXing)
+  import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
+
+  // -------- DOM
+  const takeBtn = document.getElementById("takeBtn");
+  const clearPreviewBtn = document.getElementById("clearPreviewBtn");
+  const fileInput = document.getElementById("fileInput");
+  const preview = document.getElementById("preview");
+
+  const spotText = document.getElementById("spotText");
+  const descText = document.getElementById("descText");
+  const upcText = document.getElementById("upcText");
+  const statusText = document.getElementById("statusText");
+
+  const manualUpc = document.getElementById("manualUpc");
+  const manualBtn = document.getElementById("manualBtn");
+
+  const assignPanel = document.getElementById("assignPanel");
+  const assignUpcLine = document.getElementById("assignUpcLine");
+  const spotSel = document.getElementById("spotSel");
+  const zoneSel = document.getElementById("zoneSel");
+  const descInput = document.getElementById("descInput");
+  const saveAssignBtn = document.getElementById("saveAssignBtn");
+  const cancelAssignBtn = document.getElementById("cancelAssignBtn");
+  const quickBtns = document.getElementById("quickBtns");
+
+  const exportBtn = document.getElementById("exportBtn");
+  const importFile = document.getElementById("importFile");
+  const clearAllBtn = document.getElementById("clearAllBtn");
+  const dbView = document.getElementById("dbView");
+
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+
+  const log = (m) => statusText.textContent = "Status: " + m;
+  const digits = (s) => String(s || "").replace(/\D/g, "");
+
+  // -------- Storage (UPC -> {spot, zone, desc})
+  const STORE_KEY = "meat_spot_db_bmfr_v1";
+
+  function loadStore() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; }
+    catch { return {}; }
+  }
+  function saveStore(obj) { localStorage.setItem(STORE_KEY, JSON.stringify(obj)); }
+
+  let store = loadStore();
+
+  // optional starter items
+  if (Object.keys(store).length === 0) {
+    store = {
+      "028000000111": { spot:"1", zone:"A", desc:"Lunchables" },
+      "021130012222": { spot:"3", zone:"B", desc:"Bacon" }
+    };
+    saveStore(store);
+  }
+
+  function refreshDbView() {
+    const lines = Object.entries(store)
+      .sort((a,b)=>a[0].localeCompare(b[0]))
+      .map(([upc,v]) => `${upc},${v.spot},${v.zone},${v.desc || ""}`.trimEnd());
+    dbView.value = lines.join("\n");
+  }
+  refreshDbView();
+
+  // -------- Lookup + assign
+  let lastUPC = "";
+
+  function showFound(upc, v) {
+    spotText.textContent = `SPOT ${v.spot}${v.zone}`;
+    descText.textContent = v.desc || "Saved item";
+    upcText.textContent = `UPC: ${upc}`;
+    assignPanel.style.display = "none";
+  }
+
+  function showNotFound(upc) {
+    spotText.textContent = "NOT FOUND";
+    descText.textContent = "Assign Spot + Zone below.";
+    upcText.textContent = `UPC: ${upc}`;
+
+    lastUPC = upc;
+    assignUpcLine.textContent = `Scanned UPC: ${upc}`;
+    descInput.value = "";
+    assignPanel.style.display = "block";
+  }
+
+  function lookup(upc) {
+    const v = store[upc];
+    if (v) showFound(upc, v);
+    else showNotFound(upc);
+  }
+
+  // Quick buttons 1A..4B
+  (function buildQuick() {
+    quickBtns.innerHTML = "";
+    for (const s of ["1","2","3","4"]) {
+      for (const z of ["A","B"]) {
+        const b = document.createElement("button");
+        b.className = "spotbtn";
+        b.type = "button";
+        b.textContent = `${s}${z}`;
+        b.onclick = () => { spotSel.value = s; zoneSel.value = z; };
+        quickBtns.appendChild(b);
+      }
+    }
+  })();
+
+  saveAssignBtn.onclick = () => {
+    if (!lastUPC) { log("Scan or type a UPC first"); return; }
+    store[lastUPC] = {
+      spot: spotSel.value,
+      zone: zoneSel.value,
+      desc: descInput.value.trim()
+    };
+    saveStore(store);
+    refreshDbView();
+    showFound(lastUPC, store[lastUPC]);
+    log(`Saved ${lastUPC} -> SPOT ${spotSel.value}${zoneSel.value}`);
+  };
+
+  cancelAssignBtn.onclick = () => {
+    assignPanel.style.display = "none";
+    log("Assignment canceled");
+  };
+
+  manualBtn.onclick = () => {
+    const upc = digits(manualUpc.value);
+    if (!upc) { log("Type a UPC first"); return; }
+    lookup(upc);
+    log("Manual lookup done");
+  };
+
+  // Export/Import/Clear
+  exportBtn.onclick = () => {
+    const text = dbView.value || "";
+    const blob = new Blob([text], { type:"text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "meat_spots_export.txt";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    log("Exported");
+  };
+
+  importFile.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    const text = await file.text();
+    let updated = 0;
+
+    text.split(/\r?\n/).forEach(line => {
+      const clean = line.trim();
+      if (!clean || clean.startsWith("#")) return;
+      const parts = clean.split(",");
+      const upc = digits(parts[0]);
+      const spot = (parts[1]||"").trim();
+      const zone = (parts[2]||"").trim().toUpperCase();
+      const desc = parts.slice(3).join(",").trim();
+      if (upc && spot && zone) { store[upc] = { spot, zone, desc }; updated++; }
+    });
+
+    saveStore(store);
+    refreshDbView();
+    log(`Imported (${updated} updated)`);
+    importFile.value = "";
+  });
+
+  clearAllBtn.onclick = () => {
+    if (!confirm("Clear ALL saved UPC locations on this phone?")) return;
+    store = {};
+    saveStore(store);
+    refreshDbView();
+    log("Cleared all saved");
+  };
+
+  // -------- Photo decode using BrowserMultiFormatReader
+  const reader = new BrowserMultiFormatReader();
+  reader.timeBetweenDecodingAttempts = 0;
+
+  async function decodeFromPhoto(imgEl) {
+    // Draw image to canvas (downscale for speed)
+    const w = imgEl.naturalWidth || imgEl.width;
+    const h = imgEl.naturalHeight || imgEl.height;
+    const maxW = 1600;
+    const scale = Math.min(1, maxW / w);
+    canvas.width = Math.floor(w * scale);
+    canvas.height = Math.floor(h * scale);
+
+    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/png");
+
+    // decodeFromImageUrl returns a result object when it finds a barcode
+    const result = await reader.decodeFromImageUrl(dataUrl);
+    return digits(result.getText());
+  }
+
+  function resetPreview() {
+    preview.style.display = "none";
+    preview.src = "";
+    log("idle");
+  }
+
+  // Take photo flow
+  takeBtn.onclick = () => fileInput.click();
+  clearPreviewBtn.onclick = resetPreview;
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+
+    assignPanel.style.display = "none";
+    log("Loading photo…");
+
+    const url = URL.createObjectURL(file);
+    preview.src = url;
+    preview.style.display = "block";
+
+    try {
+      await new Promise((resolve, reject) => {
+        preview.onload = resolve;
+        preview.onerror = reject;
+      });
+
+      log("Decoding barcode from photo…");
+      const upc = await decodeFromPhoto(preview);
+
+      if (!upc) {
+        spotText.textContent = "NO BARCODE";
+        descText.textContent = "Could not detect a UPC/EAN. Try closer + brighter light + less glare.";
+        upcText.textContent = "";
+        log("No barcode found. Fill the frame with the barcode.");
+      } else {
+        lookup(upc);
+        log("Decoded from photo");
+      }
+    } catch (e) {
+      spotText.textContent = "SCAN FAILED";
+      descText.textContent = "Try again: closer, brighter light, less glare, barcode straight.";
+      upcText.textContent = "";
+      log("Decode error: " + (e?.message || e));
+    } finally {
+      URL.revokeObjectURL(url);
+      fileInput.value = "";
+    }
+  });
+</script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Meat Dept Spot Scanner (Photo)</title>
 
   <style>
     body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
