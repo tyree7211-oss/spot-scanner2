@@ -3,42 +3,105 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Spot Scanner (Photo)</title>
+  <title>Meat Dept Spot Scanner (Photo)</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
     #wrap { max-width: 980px; margin: 0 auto; }
+    h2 { margin: 0 0 6px; }
     .sub { opacity:.85; margin-top: 6px; }
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 10px 0; }
     button, select, input { font-size: 18px; padding: 10px 12px; border-radius: 12px; }
     button { border:0; cursor:pointer; }
     button:disabled { opacity:.55; cursor:not-allowed; }
+
     .panel { background:#f4f4f4; border-radius:14px; padding:14px; margin-top:12px; }
     .assign { background:#fff; border-radius:14px; padding:14px; border:1px solid #ddd; margin-top:12px; display:none; }
-    .big { font-size: 38px; font-weight: 900; }
-    .status { margin-top:10px; padding:10px; border-radius:12px; background:#111; color:#eee;
-      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; white-space: pre-wrap; }
-    #preview { width:100%; max-height: 40vh; object-fit: contain; border-radius: 14px; background:#000; display:none; }
+    .big { font-size: 38px; font-weight: 900; letter-spacing: .4px; }
+
+    .status {
+      margin-top:10px; padding:10px; border-radius:12px;
+      background:#111; color:#eee;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 13px; white-space: pre-wrap;
+    }
+
+    /* Preview + Overlay Guide */
+    #previewWrap {
+      margin-top: 12px;
+      position: relative;
+      width: 100%;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #000;
+      display: none;
+    }
+    #preview {
+      width: 100%;
+      max-height: 46vh;
+      object-fit: contain;
+      display: block;
+    }
+    #guide {
+      position:absolute; inset:0;
+      pointer-events:none;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #guide .box {
+      width: 86%;
+      height: 40%;
+      border: 3px solid rgba(0,255,102,.9);
+      border-radius: 12px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.35) inset;
+    }
+    #guide .label {
+      position:absolute;
+      bottom: 10px;
+      left: 12px;
+      right: 12px;
+      color: rgba(255,255,255,.9);
+      font-size: 13px;
+      text-shadow: 0 1px 2px rgba(0,0,0,.6);
+      line-height: 1.25;
+    }
+
     .spotbtn { font-weight:900; padding: 12px 14px; border-radius: 12px; }
     textarea { width:100%; min-height: 170px; font-size: 14px; padding: 10px; border-radius: 12px; margin-top: 10px; }
     .hint { font-size: 13px; opacity:.85; margin-top:6px; }
+    .pill { display:inline-block; padding: 6px 10px; border-radius:999px; background:#e8e8e8; margin-left:6px; }
   </style>
 </head>
 <body>
 <div id="wrap">
   <h2>Meat Dept Spot Scanner (Photo)</h2>
-  <div class="sub">Take a barcode photo → it decodes UPC/EAN → shows Spot or lets you assign Spot + A/B.</div>
+  <div class="sub">
+    Take a barcode photo → it decodes UPC/EAN → shows Spot or lets you assign Spot + A/B.
+    <span class="pill">Rear camera auto</span>
+    <span class="pill">Beep on success</span>
+    <span class="pill">Auto retry</span>
+  </div>
 
   <div class="row">
     <button id="takeBtn">Take Barcode Photo</button>
     <button id="retryBtn" disabled>Retry Decode</button>
-    <button id="clearPreviewBtn">Clear</button>
+    <button id="clearBtn">Clear</button>
+
+    <!-- IMPORTANT: capture="environment" forces back camera on Android Chrome -->
     <input id="fileInput" type="file" accept="image/*" capture="environment" style="display:none;">
   </div>
+
   <div class="hint">
-    Best results: get close so barcode fills most of the photo, tilt pack to remove glare, keep barcode straight.
+    Best results: get close so the barcode fills the green box, tilt to remove glare, keep barcode straight.
   </div>
 
-  <img id="preview" alt="preview"/>
+  <div id="previewWrap">
+    <img id="preview" alt="preview"/>
+    <div id="guide">
+      <div class="box"></div>
+      <div class="label">
+        Frame the barcode inside the green box. If it’s blurry: take the photo again closer + steadier.
+      </div>
+    </div>
+  </div>
 
   <div class="panel">
     <div class="big" id="spotText">Ready</div>
@@ -54,10 +117,11 @@
       <input id="manualUpc" inputmode="numeric" placeholder="Type UPC digits"/>
       <button id="manualBtn">Lookup</button>
     </div>
+    <div class="hint">If photo scan fails repeatedly, type the UPC once and save it.</div>
   </div>
 
   <div class="assign" id="assignPanel">
-    <div style="font-weight:900; font-size:18px;">Assign location for scanned item</div>
+    <div style="font-weight:900; font-size:18px;">Assign location</div>
     <div class="sub" id="assignUpcLine"></div>
 
     <div class="row">
@@ -101,19 +165,20 @@
 </div>
 
 <script type="module">
-  // ✅ Multi-format reader (ZXing)
   import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
 
-  // DOM
+  // ---------------- DOM ----------------
   const takeBtn = document.getElementById("takeBtn");
   const retryBtn = document.getElementById("retryBtn");
-  const clearPreviewBtn = document.getElementById("clearPreviewBtn");
+  const clearBtn = document.getElementById("clearBtn");
   const fileInput = document.getElementById("fileInput");
+
+  const previewWrap = document.getElementById("previewWrap");
   const preview = document.getElementById("preview");
 
   const spotText = document.getElementById("spotText");
   const descText = document.getElementById("descText");
-  const upcText = document.getElementById("upcText");
+  const upcText  = document.getElementById("upcText");
   const statusText = document.getElementById("statusText");
 
   const manualUpc = document.getElementById("manualUpc");
@@ -137,10 +202,27 @@
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
   const log = (m) => statusText.textContent = "Status: " + m;
-  const digits = (s) => String(s || "").replace(/\D/g, "");
+  const digits = (s) => String(s || "").replace(/\D/g,"");
 
-  // Storage
-  const STORE_KEY = "meat_spot_db_photo_best_v1";
+  // ---------------- Beep (no external files) ----------------
+  let audioCtx;
+  function beep() {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = "sine";
+      o.frequency.value = 880; // beep pitch
+      g.gain.value = 0.08;      // volume
+      o.connect(g);
+      g.connect(audioCtx.destination);
+      o.start();
+      setTimeout(() => { o.stop(); }, 120);
+    } catch {}
+  }
+
+  // ---------------- Storage ----------------
+  const STORE_KEY = "meat_spot_db_photo_pro_v1";
   function loadStore(){ try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; } catch { return {}; } }
   function saveStore(obj){ localStorage.setItem(STORE_KEY, JSON.stringify(obj)); }
   let store = loadStore();
@@ -153,7 +235,7 @@
   }
   refreshDbView();
 
-  // Lookup + assign
+  // ---------------- Lookup + Assign ----------------
   let lastUPC = "";
 
   function showFound(upc, v){
@@ -167,6 +249,7 @@
     spotText.textContent = "NOT FOUND";
     descText.textContent = "Assign Spot + Zone below.";
     upcText.textContent  = `UPC: ${upc}`;
+
     lastUPC = upc;
     assignUpcLine.textContent = `Scanned UPC: ${upc}`;
     descInput.value = "";
@@ -179,7 +262,7 @@
     else showNotFound(upc);
   }
 
-  // Quick buttons
+  // Quick set buttons 1A..4B
   (function buildQuick(){
     quickBtns.innerHTML = "";
     for (const s of ["1","2","3","4"]) {
@@ -255,38 +338,53 @@
     log("Cleared all saved");
   };
 
-  // ✅ Multi-format reader
+  // ---------------- ZXing MultiFormatReader ----------------
   const reader = new BrowserMultiFormatReader();
+  reader.timeBetweenDecodingAttempts = 0;
 
-  // Photo decode strategy:
-  // 1) Try decoding a CENTER CROP (barcodes usually centered)
-  // 2) If fail, try full image
-  // This improves success on busy packaging backgrounds.
+  // Auto “focus retry” logic (web limitation explained):
+  // Browser cannot force hardware autofocus for a still photo.
+  // Best we can do is:
+  // - run multiple decode passes on different crops + scales
+  // - if still fails, tell user to retake photo closer/steady
+  //
+  // This dramatically boosts success with slightly blurry photos.
   async function decodeDataUrl(dataUrl){
     const result = await reader.decodeFromImageUrl(dataUrl);
     return digits(result.getText());
   }
 
-  function drawToCanvas(img, cropMode){
+  function drawVariant(img, variant) {
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
 
-    // Downscale for speed
-    const maxW = 1400;
-    const scale = Math.min(1, maxW / w);
+    // Scale variants (simulate focus/clarity improvements by resampling)
+    const maxW = variant.maxW;
 
-    let sx = 0, sy = 0, sw = w, sh = h;
+    // Crop variants: focus on likely barcode zone
+    let sx=0, sy=0, sw=w, sh=h;
 
-    if (cropMode === "center") {
-      // Center crop: keep middle 70% width and 45% height (good for UPC shots)
-      sw = Math.floor(w * 0.70);
-      sh = Math.floor(h * 0.45);
+    if (variant.crop === "centerWide") {
+      sw = Math.floor(w * 0.78);
+      sh = Math.floor(h * 0.42);
       sx = Math.floor((w - sw) / 2);
       sy = Math.floor((h - sh) / 2);
+    } else if (variant.crop === "centerTight") {
+      sw = Math.floor(w * 0.66);
+      sh = Math.floor(h * 0.36);
+      sx = Math.floor((w - sw) / 2);
+      sy = Math.floor((h - sh) / 2);
+    } else if (variant.crop === "lowerCenter") {
+      sw = Math.floor(w * 0.80);
+      sh = Math.floor(h * 0.45);
+      sx = Math.floor((w - sw) / 2);
+      sy = Math.floor(h * 0.40); // slightly lower (some people aim low)
     }
 
-    const outW = Math.floor(sw * scale);
-    const outH = Math.floor(sh * scale);
+    // Downscale for speed + sometimes better decode
+    const scale = Math.min(1, maxW / sw);
+    const outW = Math.max(1, Math.floor(sw * scale));
+    const outH = Math.max(1, Math.floor(sh * scale));
 
     canvas.width = outW;
     canvas.height = outH;
@@ -295,39 +393,56 @@
     return canvas.toDataURL("image/png");
   }
 
-  let lastImageUrl = "";
+  // Multi-pass decode pipeline (auto retry)
+  // Order matters: fastest + most likely first.
+  const VARIANTS = [
+    { name:"center crop (wide) @1400", crop:"centerWide",  maxW:1400 },
+    { name:"full image @1400",        crop:"full",        maxW:1400 },
+    { name:"center crop (tight) @1400",crop:"centerTight",maxW:1400 },
+    { name:"lower center @1400",      crop:"lowerCenter", maxW:1400 },
+    { name:"center crop (wide) @1000",crop:"centerWide",  maxW:1000 },
+    { name:"full image @1000",        crop:"full",        maxW:1000 }
+  ];
 
   async function runDecodePipeline(){
     if (!preview.src) return;
 
     retryBtn.disabled = true;
-    log("Decoding… (center crop first)");
+    assignPanel.style.display = "none";
+
+    spotText.textContent = "SCANNING…";
+    descText.textContent = "Trying multiple passes (helps blurry shots).";
+    upcText.textContent = "";
 
     try {
-      const centerUrl = drawToCanvas(preview, "center");
-      let upc = "";
-      try {
-        upc = await decodeDataUrl(centerUrl);
-      } catch {}
+      for (let i=0; i<VARIANTS.length; i++) {
+        const v = VARIANTS[i];
+        log(`Decoding: ${v.name}`);
 
-      if (!upc) {
-        log("Center failed. Trying full image…");
-        const fullUrl = drawToCanvas(preview, "full");
-        upc = await decodeDataUrl(fullUrl);
+        const dataUrl = drawVariant(preview, v);
+
+        try {
+          const upc = await decodeDataUrl(dataUrl);
+          if (upc) {
+            beep();
+            lookup(upc);
+            log("Decoded successfully ✅");
+            return;
+          }
+        } catch {
+          // ignore and continue to next variant
+        }
       }
 
-      if (!upc) {
-        spotText.textContent = "NO BARCODE";
-        descText.textContent = "Could not detect UPC/EAN. Try closer + brighter light + less glare.";
-        upcText.textContent = "";
-        log("No barcode found. Fill the frame with the barcode and try again.");
-      } else {
-        lookup(upc);
-        log("Decoded successfully");
-      }
-    } catch (e) {
+      // If all variants fail:
       spotText.textContent = "SCAN FAILED";
-      descText.textContent = "Try again: closer, brighter light, less glare, barcode straight.";
+      descText.textContent = "Retake photo: closer, steadier, less glare. Fill the green box with barcode.";
+      upcText.textContent = "";
+      log("All decode passes failed. Retake photo with better focus.");
+
+    } catch (e) {
+      spotText.textContent = "ERROR";
+      descText.textContent = "Decode error. Try again.";
       upcText.textContent = "";
       log("Decode error: " + (e?.message || e));
     } finally {
@@ -335,13 +450,23 @@
     }
   }
 
-  // Take photo flow
-  takeBtn.onclick = () => fileInput.click();
+  // ---------------- Photo capture flow (forces rear camera) ----------------
+  function openBackCamera() {
+    // Force rear camera every time
+    fileInput.setAttribute("capture", "environment");
+    fileInput.click();
+  }
 
-  clearPreviewBtn.onclick = () => {
-    preview.style.display = "none";
+  takeBtn.onclick = openBackCamera;
+
+  clearBtn.onclick = () => {
+    previewWrap.style.display = "none";
     preview.src = "";
     retryBtn.disabled = true;
+    assignPanel.style.display = "none";
+    spotText.textContent = "Ready";
+    descText.textContent = "Tap “Take Barcode Photo”";
+    upcText.textContent = "";
     log("idle");
   };
 
@@ -351,25 +476,27 @@
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
 
-    assignPanel.style.display = "none";
     retryBtn.disabled = true;
+    assignPanel.style.display = "none";
+
     log("Loading photo…");
 
     const url = URL.createObjectURL(file);
-    lastImageUrl = url;
-
     preview.src = url;
-    preview.style.display = "block";
+    previewWrap.style.display = "block";
 
     try {
       await new Promise((resolve, reject) => {
         preview.onload = resolve;
         preview.onerror = reject;
       });
+
       retryBtn.disabled = false;
       await runDecodePipeline();
+
     } finally {
-      // We can revoke after decode, but keep it until next load for stability
+      // clean up
+      URL.revokeObjectURL(url);
       fileInput.value = "";
     }
   });
