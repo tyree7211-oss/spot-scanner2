@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Meat Dept Spot Scanner (Photo)</title>
+  <title>Spot Scanner (Photo)</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
     #wrap { max-width: 980px; margin: 0 auto; }
@@ -20,24 +20,29 @@
     #preview { width:100%; max-height: 40vh; object-fit: contain; border-radius: 14px; background:#000; display:none; }
     .spotbtn { font-weight:900; padding: 12px 14px; border-radius: 12px; }
     textarea { width:100%; min-height: 170px; font-size: 14px; padding: 10px; border-radius: 12px; margin-top: 10px; }
+    .hint { font-size: 13px; opacity:.85; margin-top:6px; }
   </style>
 </head>
 <body>
 <div id="wrap">
-  <h2>Meat Dept Spot Scanner (Take Photo)</h2>
-  <div class="sub">Tap <b>Take Barcode Photo</b> → it reads the UPC → shows Spot, or lets you assign Spot + A/B.</div>
+  <h2>Meat Dept Spot Scanner (Photo)</h2>
+  <div class="sub">Take a barcode photo → it decodes UPC/EAN → shows Spot or lets you assign Spot + A/B.</div>
 
   <div class="row">
     <button id="takeBtn">Take Barcode Photo</button>
-    <button id="clearPreviewBtn">Clear Preview</button>
+    <button id="retryBtn" disabled>Retry Decode</button>
+    <button id="clearPreviewBtn">Clear</button>
     <input id="fileInput" type="file" accept="image/*" capture="environment" style="display:none;">
+  </div>
+  <div class="hint">
+    Best results: get close so barcode fills most of the photo, tilt pack to remove glare, keep barcode straight.
   </div>
 
   <img id="preview" alt="preview"/>
 
   <div class="panel">
     <div class="big" id="spotText">Ready</div>
-    <div class="sub" id="descText">Take a photo of the barcode</div>
+    <div class="sub" id="descText">Tap “Take Barcode Photo”</div>
     <div class="sub" id="upcText"></div>
   </div>
 
@@ -49,7 +54,6 @@
       <input id="manualUpc" inputmode="numeric" placeholder="Type UPC digits"/>
       <button id="manualBtn">Lookup</button>
     </div>
-    <div class="sub">If the barcode photo doesn’t decode, type the UPC once and save it.</div>
   </div>
 
   <div class="assign" id="assignPanel">
@@ -97,11 +101,12 @@
 </div>
 
 <script type="module">
-  // ✅ BrowserMultiFormatReader (ZXing)
+  // ✅ Multi-format reader (ZXing)
   import { BrowserMultiFormatReader } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
 
-  // -------- DOM
+  // DOM
   const takeBtn = document.getElementById("takeBtn");
+  const retryBtn = document.getElementById("retryBtn");
   const clearPreviewBtn = document.getElementById("clearPreviewBtn");
   const fileInput = document.getElementById("fileInput");
   const preview = document.getElementById("preview");
@@ -129,68 +134,53 @@
   const dbView = document.getElementById("dbView");
 
   const canvas = document.getElementById("canvas");
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
   const log = (m) => statusText.textContent = "Status: " + m;
   const digits = (s) => String(s || "").replace(/\D/g, "");
 
-  // -------- Storage (UPC -> {spot, zone, desc})
-  const STORE_KEY = "meat_spot_db_bmfr_v1";
-
-  function loadStore() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; }
-    catch { return {}; }
-  }
-  function saveStore(obj) { localStorage.setItem(STORE_KEY, JSON.stringify(obj)); }
-
+  // Storage
+  const STORE_KEY = "meat_spot_db_photo_best_v1";
+  function loadStore(){ try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; } catch { return {}; } }
+  function saveStore(obj){ localStorage.setItem(STORE_KEY, JSON.stringify(obj)); }
   let store = loadStore();
 
-  // optional starter items
-  if (Object.keys(store).length === 0) {
-    store = {
-      "028000000111": { spot:"1", zone:"A", desc:"Lunchables" },
-      "021130012222": { spot:"3", zone:"B", desc:"Bacon" }
-    };
-    saveStore(store);
-  }
-
-  function refreshDbView() {
+  function refreshDbView(){
     const lines = Object.entries(store)
       .sort((a,b)=>a[0].localeCompare(b[0]))
-      .map(([upc,v]) => `${upc},${v.spot},${v.zone},${v.desc || ""}`.trimEnd());
+      .map(([upc,v]) => `${upc},${v.spot},${v.zone},${v.desc||""}`.trimEnd());
     dbView.value = lines.join("\n");
   }
   refreshDbView();
 
-  // -------- Lookup + assign
+  // Lookup + assign
   let lastUPC = "";
 
-  function showFound(upc, v) {
+  function showFound(upc, v){
     spotText.textContent = `SPOT ${v.spot}${v.zone}`;
     descText.textContent = v.desc || "Saved item";
-    upcText.textContent = `UPC: ${upc}`;
+    upcText.textContent  = `UPC: ${upc}`;
     assignPanel.style.display = "none";
   }
 
-  function showNotFound(upc) {
+  function showNotFound(upc){
     spotText.textContent = "NOT FOUND";
     descText.textContent = "Assign Spot + Zone below.";
-    upcText.textContent = `UPC: ${upc}`;
-
+    upcText.textContent  = `UPC: ${upc}`;
     lastUPC = upc;
     assignUpcLine.textContent = `Scanned UPC: ${upc}`;
     descInput.value = "";
     assignPanel.style.display = "block";
   }
 
-  function lookup(upc) {
+  function lookup(upc){
     const v = store[upc];
     if (v) showFound(upc, v);
     else showNotFound(upc);
   }
 
-  // Quick buttons 1A..4B
-  (function buildQuick() {
+  // Quick buttons
+  (function buildQuick(){
     quickBtns.innerHTML = "";
     for (const s of ["1","2","3","4"]) {
       for (const z of ["A","B"]) {
@@ -205,31 +195,24 @@
   })();
 
   saveAssignBtn.onclick = () => {
-    if (!lastUPC) { log("Scan or type a UPC first"); return; }
-    store[lastUPC] = {
-      spot: spotSel.value,
-      zone: zoneSel.value,
-      desc: descInput.value.trim()
-    };
+    if (!lastUPC) return log("Scan or type a UPC first");
+    store[lastUPC] = { spot: spotSel.value, zone: zoneSel.value, desc: descInput.value.trim() };
     saveStore(store);
     refreshDbView();
     showFound(lastUPC, store[lastUPC]);
     log(`Saved ${lastUPC} -> SPOT ${spotSel.value}${zoneSel.value}`);
   };
 
-  cancelAssignBtn.onclick = () => {
-    assignPanel.style.display = "none";
-    log("Assignment canceled");
-  };
+  cancelAssignBtn.onclick = () => { assignPanel.style.display = "none"; log("Assignment canceled"); };
 
   manualBtn.onclick = () => {
     const upc = digits(manualUpc.value);
-    if (!upc) { log("Type a UPC first"); return; }
+    if (!upc) return log("Type a UPC first");
     lookup(upc);
     log("Manual lookup done");
   };
 
-  // Export/Import/Clear
+  // Export / Import / Clear
   exportBtn.onclick = () => {
     const text = dbView.value || "";
     const blob = new Blob([text], { type:"text/plain" });
@@ -244,7 +227,6 @@
   importFile.addEventListener("change", async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
-
     const text = await file.text();
     let updated = 0;
 
@@ -273,45 +255,109 @@
     log("Cleared all saved");
   };
 
-  // -------- Photo decode using BrowserMultiFormatReader
+  // ✅ Multi-format reader
   const reader = new BrowserMultiFormatReader();
-  reader.timeBetweenDecodingAttempts = 0;
 
-  async function decodeFromPhoto(imgEl) {
-    // Draw image to canvas (downscale for speed)
-    const w = imgEl.naturalWidth || imgEl.width;
-    const h = imgEl.naturalHeight || imgEl.height;
-    const maxW = 1600;
-    const scale = Math.min(1, maxW / w);
-    canvas.width = Math.floor(w * scale);
-    canvas.height = Math.floor(h * scale);
-
-    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/png");
-
-    // decodeFromImageUrl returns a result object when it finds a barcode
+  // Photo decode strategy:
+  // 1) Try decoding a CENTER CROP (barcodes usually centered)
+  // 2) If fail, try full image
+  // This improves success on busy packaging backgrounds.
+  async function decodeDataUrl(dataUrl){
     const result = await reader.decodeFromImageUrl(dataUrl);
     return digits(result.getText());
   }
 
-  function resetPreview() {
-    preview.style.display = "none";
-    preview.src = "";
-    log("idle");
+  function drawToCanvas(img, cropMode){
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+
+    // Downscale for speed
+    const maxW = 1400;
+    const scale = Math.min(1, maxW / w);
+
+    let sx = 0, sy = 0, sw = w, sh = h;
+
+    if (cropMode === "center") {
+      // Center crop: keep middle 70% width and 45% height (good for UPC shots)
+      sw = Math.floor(w * 0.70);
+      sh = Math.floor(h * 0.45);
+      sx = Math.floor((w - sw) / 2);
+      sy = Math.floor((h - sh) / 2);
+    }
+
+    const outW = Math.floor(sw * scale);
+    const outH = Math.floor(sh * scale);
+
+    canvas.width = outW;
+    canvas.height = outH;
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+
+    return canvas.toDataURL("image/png");
+  }
+
+  let lastImageUrl = "";
+
+  async function runDecodePipeline(){
+    if (!preview.src) return;
+
+    retryBtn.disabled = true;
+    log("Decoding… (center crop first)");
+
+    try {
+      const centerUrl = drawToCanvas(preview, "center");
+      let upc = "";
+      try {
+        upc = await decodeDataUrl(centerUrl);
+      } catch {}
+
+      if (!upc) {
+        log("Center failed. Trying full image…");
+        const fullUrl = drawToCanvas(preview, "full");
+        upc = await decodeDataUrl(fullUrl);
+      }
+
+      if (!upc) {
+        spotText.textContent = "NO BARCODE";
+        descText.textContent = "Could not detect UPC/EAN. Try closer + brighter light + less glare.";
+        upcText.textContent = "";
+        log("No barcode found. Fill the frame with the barcode and try again.");
+      } else {
+        lookup(upc);
+        log("Decoded successfully");
+      }
+    } catch (e) {
+      spotText.textContent = "SCAN FAILED";
+      descText.textContent = "Try again: closer, brighter light, less glare, barcode straight.";
+      upcText.textContent = "";
+      log("Decode error: " + (e?.message || e));
+    } finally {
+      retryBtn.disabled = false;
+    }
   }
 
   // Take photo flow
   takeBtn.onclick = () => fileInput.click();
-  clearPreviewBtn.onclick = resetPreview;
+
+  clearPreviewBtn.onclick = () => {
+    preview.style.display = "none";
+    preview.src = "";
+    retryBtn.disabled = true;
+    log("idle");
+  };
+
+  retryBtn.onclick = runDecodePipeline;
 
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
 
     assignPanel.style.display = "none";
+    retryBtn.disabled = true;
     log("Loading photo…");
 
     const url = URL.createObjectURL(file);
+    lastImageUrl = url;
+
     preview.src = url;
     preview.style.display = "block";
 
@@ -320,26 +366,10 @@
         preview.onload = resolve;
         preview.onerror = reject;
       });
-
-      log("Decoding barcode from photo…");
-      const upc = await decodeFromPhoto(preview);
-
-      if (!upc) {
-        spotText.textContent = "NO BARCODE";
-        descText.textContent = "Could not detect a UPC/EAN. Try closer + brighter light + less glare.";
-        upcText.textContent = "";
-        log("No barcode found. Fill the frame with the barcode.");
-      } else {
-        lookup(upc);
-        log("Decoded from photo");
-      }
-    } catch (e) {
-      spotText.textContent = "SCAN FAILED";
-      descText.textContent = "Try again: closer, brighter light, less glare, barcode straight.";
-      upcText.textContent = "";
-      log("Decode error: " + (e?.message || e));
+      retryBtn.disabled = false;
+      await runDecodePipeline();
     } finally {
-      URL.revokeObjectURL(url);
+      // We can revoke after decode, but keep it until next load for stability
       fileInput.value = "";
     }
   });
